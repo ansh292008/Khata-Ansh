@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -7,16 +7,19 @@ import {
   PieChart,
   PiggyBank,
   Zap,
-  Lock,
-  Shield,
   Calendar,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
   Sparkles,
-  Layers
+  Layers,
+  CreditCard,
+  Landmark,
+  Wallet,
+  CheckCircle2
 } from 'lucide-react';
 import { FinancialSummary, Transaction, UserRole, CategoryBudget, CategoryDef, UdhaarRecord } from '../types';
+import { CREDIT_CARDS } from '../utils/accounts';
 
 interface OverviewCardsProps {
   summary: FinancialSummary;
@@ -38,7 +41,6 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
   summary, 
   transactions = [],
   udhaars = [],
-  budgets = [],
   categories = [],
   userRole = 'owner',
   activeFamilyMemberName,
@@ -50,6 +52,7 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
   onNavigateToUdhaar,
 }) => {
   const isFamily = userRole === 'family';
+  const [includeCarryforward, setIncludeCarryforward] = useState(false);
 
   // Indian Standard Time (IST) Month
   const now = new Date();
@@ -72,6 +75,23 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
     }
   };
 
+  // Helper: Check if a transaction was paid via Credit Card
+  const isCreditCardTx = (t: Transaction): boolean => {
+    const acc = (t.account || '').trim();
+    if (CREDIT_CARDS.some(c => c.id === acc)) return true;
+    if (/\bcc\b|credit card|2005|0000|5733|6526|8210|5376/i.test(acc)) return true;
+    if (!acc && t.paymentMethod === 'Card') return true;
+    return false;
+  };
+
+  const getCardLabel = (t: Transaction): string => {
+    const acc = (t.account || '').trim();
+    const found = CREDIT_CARDS.find(c => c.id === acc);
+    if (found) return found.shortName;
+    if (acc) return acc;
+    return 'Credit Card';
+  };
+
   // 1. Separate transactions into Previous Months and Current/Selected Month
   const prevTransactions = !isAllTime
     ? transactions.filter(t => t.date && t.date < `${activeMonth}-01`)
@@ -81,73 +101,61 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
     ? transactions.filter(t => t.date && t.date.startsWith(activeMonth))
     : transactions;
 
-  // 2. Opening Balance / Carryforward from previous months
-  let prevIncome = 0;
-  let prevTotalExpense = 0;
-  let prevPersonalExpense = 0;
-  let prevUdhaarLent = 0;
-  let prevUdhaarRecovered = 0;
-  let prevRimRecovery = 0;
+  // 2. Previous Months Carryforward calculation
+  let prevTotalInflow = 0;
+  let prevTotalKharcha = 0;
+  let prevBankCashKharcha = 0;
   let prevPendingRim = 0;
 
   for (const t of prevTransactions) {
     const amt = Number(t.amount) || 0;
-    const isRimInflow = Boolean(
-      t.isReimbursementInflow ||
-      (t.type === 'income' && (t.category === 'Reimbursement' || t.category === 'Reimbursement Received'))
-    );
-    const isUdhaarRecovery = Boolean(
-      t.isUdhaarRecovery ||
-      (t.type === 'income' && (t.category === 'Udhaar Recovery' || t.category === 'Udhaar Received' || t.category === 'Udhaar Settle' || (t.category && t.category.toLowerCase().includes('udhaar') && t.type === 'income')))
-    );
-
     if (t.type === 'income') {
-      if (isUdhaarRecovery) {
-        prevUdhaarRecovered += amt;
-      } else if (isRimInflow) {
-        prevRimRecovery += amt;
-      } else {
-        prevIncome += amt;
-      }
+      prevTotalInflow += amt;
     } else {
+      const isCcBillPayment = Boolean(t.isCcPayment || t.category === 'CC Payment');
+      if (!isCcBillPayment) {
+        prevTotalKharcha += amt;
+        if (!isCreditCardTx(t)) {
+          prevBankCashKharcha += amt;
+        }
+      }
       const isRim = Boolean(t.isReimbursement || t.category === 'Reimbursement');
-      const isUdhaarLent = Boolean(
-        t.isUdhaarLent ||
-        t.category === 'Udhaar Given' ||
-        t.category === 'Loan Given' ||
-        (t.category && t.category.toLowerCase().includes('udhaar') && t.type === 'expense') ||
-        (t.tags && t.tags.includes('udhaar-lent'))
-      );
-      if (isUdhaarLent) {
-        prevUdhaarLent += amt;
-      } else {
-        prevTotalExpense += amt;
-        if (isRim) {
-          const settledAmt = t.reimbursementStatus === 'settled'
-            ? amt
-            : Math.min(amt, Math.max(0, Number(t.reimbursementSettledAmount) || 0));
-          const rem = Math.max(0, amt - settledAmt);
-          if (t.reimbursementStatus !== 'settled' && rem > 0) {
-            prevPendingRim += rem;
-          }
-        } else if (!t.isSavingsTransfer && !t.isWifeTransfer && t.category !== 'Wife Transfer' && !t.isCcPayment && t.category !== 'CC Payment') {
-          prevPersonalExpense += amt;
+      if (isRim) {
+        const settledAmt = t.reimbursementStatus === 'settled'
+          ? amt
+          : Math.min(amt, Math.max(0, Number(t.reimbursementSettledAmount) || 0));
+        const rem = Math.max(0, amt - settledAmt);
+        if (t.reimbursementStatus !== 'settled' && rem > 0) {
+          prevPendingRim += rem;
         }
       }
     }
   }
 
-  // 3. Selected Month figures
-  let monthIncome = 0;
-  let monthRimRecovery = 0;
-  let monthTotalExpense = 0;
-  let monthPersonalExpense = 0;
-  let monthBudgetSpent = 0;
-  let monthUdhaarLent = 0;
-  let monthUdhaarRecovered = 0;
-  let monthPendingRim = 0;
+  const prevFinalSavingsCarry = prevTotalInflow - prevTotalKharcha;
+  const prevBankCashCarry = prevTotalInflow - prevBankCashKharcha;
+
+  // 3. Selected Month Seedha Hisaab Figures
+  let regularIncome = 0;
+  let rimRecoveryIncome = 0;
+  let udhaarRecoveryIncome = 0;
   let monthIncomeCount = 0;
+
+  // Expenses breakdown by Purpose (Bank + Cash + Card combined)
+  let budgetAndGharKharcha = 0; // Personal/Budget/Ghar kharcha
+  let rimKharcha = 0;           // Reimbursement kharcha
+  let udhaarDiyaKharcha = 0;    // Udhar diya
+  let ccPaymentDone = 0;        // Credit card bill paid from bank (tracked separately)
+  let monthBudgetSpent = 0;     // Strictly for Monthly Budget progress bar
   let monthExpenseCount = 0;
+
+  // Expenses breakdown by Payment Source (Bank & Cash vs Credit Cards)
+  let bankOnlyKharcha = 0;
+  let cashOnlyKharcha = 0;
+  let cardTotalKharcha = 0;
+  const cardWiseBreakdown: Record<string, number> = {};
+
+  let monthPendingRim = 0;
 
   for (const t of monthTransactions) {
     const amt = Number(t.amount) || 0;
@@ -157,19 +165,31 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
     );
     const isUdhaarRecovery = Boolean(
       t.isUdhaarRecovery ||
-      (t.type === 'income' && (t.category === 'Udhaar Recovery' || t.category === 'Udhaar Received' || t.category === 'Udhaar Settle' || (t.category && t.category.toLowerCase().includes('udhaar') && t.type === 'income')))
+      (t.type === 'income' && (
+        t.category === 'Udhaar Recovery' ||
+        t.category === 'Udhaar Received' ||
+        t.category === 'Udhaar Settle' ||
+        (t.category && t.category.toLowerCase().includes('udhaar'))
+      ))
     );
 
     if (t.type === 'income') {
+      monthIncomeCount++;
       if (isUdhaarRecovery) {
-        monthUdhaarRecovered += amt;
-      } else if (!isRimInflow) {
-        monthIncome += amt;
-        monthIncomeCount++;
+        udhaarRecoveryIncome += amt;
+      } else if (isRimInflow) {
+        rimRecoveryIncome += amt;
       } else {
-        monthRimRecovery += amt;
+        regularIncome += amt;
       }
     } else {
+      const isCcBillPayment = Boolean(t.isCcPayment || t.category === 'CC Payment');
+      if (isCcBillPayment) {
+        ccPaymentDone += amt;
+        continue;
+      }
+
+      monthExpenseCount++;
       const isRim = Boolean(t.isReimbursement || t.category === 'Reimbursement');
       const isUdhaarLent = Boolean(
         t.isUdhaarLent ||
@@ -178,71 +198,78 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
         (t.category && t.category.toLowerCase().includes('udhaar') && t.type === 'expense') ||
         (t.tags && t.tags.includes('udhaar-lent'))
       );
-      const catDef = categories.find(c => c.name.toLowerCase() === (t.category || '').toLowerCase());
-      const isExemptFromBudget = Boolean(catDef?.excludeFromBudget) || isRim || isUdhaarLent || t.isSavingsTransfer || t.isWifeTransfer || t.category === 'Wife Transfer' || t.isCcPayment || t.category === 'CC Payment';
 
+      // 3A. Purpose Breakdown
       if (isUdhaarLent) {
-        monthUdhaarLent += amt;
-      } else {
-        monthTotalExpense += amt;
-        monthExpenseCount++;
-        if (isRim) {
-          const settledAmt = t.reimbursementStatus === 'settled'
-            ? amt
-            : Math.min(amt, Math.max(0, Number(t.reimbursementSettledAmount) || 0));
-          const rem = Math.max(0, amt - settledAmt);
-          if (t.reimbursementStatus !== 'settled' && rem > 0) {
-            monthPendingRim += rem;
-          }
-        } else if (!t.isSavingsTransfer && !t.isWifeTransfer && t.category !== 'Wife Transfer' && !t.isCcPayment && t.category !== 'CC Payment') {
-          monthPersonalExpense += amt;
-          if (!isExemptFromBudget) {
-            monthBudgetSpent += amt;
-          }
+        udhaarDiyaKharcha += amt;
+      } else if (isRim) {
+        rimKharcha += amt;
+        const settledAmt = t.reimbursementStatus === 'settled'
+          ? amt
+          : Math.min(amt, Math.max(0, Number(t.reimbursementSettledAmount) || 0));
+        const rem = Math.max(0, amt - settledAmt);
+        if (t.reimbursementStatus !== 'settled' && rem > 0) {
+          monthPendingRim += rem;
         }
+      } else {
+        budgetAndGharKharcha += amt;
+        const catDef = categories.find(c => c.name.toLowerCase() === (t.category || '').toLowerCase());
+        const isExemptFromBudget = Boolean(catDef?.excludeFromBudget) || t.isSavingsTransfer || t.isWifeTransfer || t.category === 'Wife Transfer';
+        if (!isExemptFromBudget) {
+          monthBudgetSpent += amt;
+        }
+      }
+
+      // 3B. Payment Source Breakdown (Bank/Cash vs Credit Card)
+      if (isCreditCardTx(t)) {
+        cardTotalKharcha += amt;
+        const cLabel = getCardLabel(t);
+        cardWiseBreakdown[cLabel] = (cardWiseBreakdown[cLabel] || 0) + amt;
+      } else if (t.account === 'Cash' || t.paymentMethod === 'Cash') {
+        cashOnlyKharcha += amt;
+      } else {
+        bankOnlyKharcha += amt;
       }
     }
   }
 
-  // 4. Udhaar Tab Analysis (Dedicated Khata Records)
+  // 4. Core Seedha Hisaab Totals (Matching User's Exact Formula)
+  // Total Income (including Salary + RIM Recovery + Udhar Recovery)
+  const monthTotalIncome = regularIncome + rimRecoveryIncome + udhaarRecoveryIncome;
+  const effectiveTotalIncome = (!isAllTime && includeCarryforward)
+    ? monthTotalIncome + prevFinalSavingsCarry
+    : monthTotalIncome;
+
+  // Total Kharcha (Bank + Cash + All Cards — Budget + RIM + Udhar Diya)
+  const totalBankAndCashKharcha = bankOnlyKharcha + cashOnlyKharcha;
+  const totalAllKharcha = totalBankAndCashKharcha + cardTotalKharcha; // Also equals budgetAndGharKharcha + rimKharcha + udhaarDiyaKharcha
+
+  // Bank & Cash Balance currently in hand (before setting aside Card Reserve)
+  // Example: 1,00,000 Income - 30,000 Bank/Cash Kharcha = 70,000 in Bank & Cash
+  const bankAndCashInHand = effectiveTotalIncome - totalBankAndCashKharcha;
+
+  // Card Reserve (To be set aside from Bank & Cash for paying Credit Card bills)
+  // Example: 30,000 spent via different Credit Cards
+  const cardReserveAmount = cardTotalKharcha;
+  const cardBreakdownEntries = Object.entries(cardWiseBreakdown).sort((a, b) => b[1] - a[1]);
+
+  // Final Pure Savings (After setting aside Card Reserve)
+  // Example: 70,000 Bank/Cash - 30,000 Card Reserve = 40,000 Final Savings (or 1,00,000 - 60,000 = 40,000)
+  const finalPureSavings = bankAndCashInHand - cardReserveAmount;
+
+  // Udhaar Tab Pending info for quick reference
   const safeUdhaars = Array.isArray(udhaars) ? udhaars : [];
-  const tabPendingLentRecords = safeUdhaars.filter(u => u && u.type === 'lent' && u.status !== 'settled');
-  const tabSettledLentRecords = safeUdhaars.filter(u => u && u.type === 'lent' && u.status === 'settled');
-  const tabPendingBorrowedRecords = safeUdhaars.filter(u => u && u.type === 'borrowed' && u.status !== 'settled');
-
-  const tabPendingLent = tabPendingLentRecords.reduce((sum, u) => sum + (Number(u.amount) || 0), 0);
-  const tabPendingBorrowed = tabPendingBorrowedRecords.reduce((sum, u) => sum + (Number(u.amount) || 0), 0);
-  const tabTotalSettled = tabSettledLentRecords.reduce((sum, u) => sum + (Number(u.amount) || 0), 0);
-
-  const monthTabPendingLent = tabPendingLentRecords
-    .filter(u => !isAllTime ? (u.date && u.date.startsWith(activeMonth)) : true)
+  const tabPendingLent = safeUdhaars
+    .filter(u => u && u.type === 'lent' && u.status !== 'settled')
     .reduce((sum, u) => sum + (Number(u.amount) || 0), 0);
-
-  const prevTabPendingLent = tabPendingLentRecords
-    .filter(u => !isAllTime ? (u.date && u.date < `${activeMonth}-01`) : false)
+  const tabPendingBorrowed = safeUdhaars
+    .filter(u => u && u.type === 'borrowed' && u.status !== 'settled')
     .reduce((sum, u) => sum + (Number(u.amount) || 0), 0);
-
-  // Synchronized Bakaya: If Udhaar tab has records, its unsettled status is authoritative!
-  const hasUdhaarTabEntries = safeUdhaars.length > 0;
-  const effectiveTotalBakaya = hasUdhaarTabEntries
+  const effectiveTotalBakaya = safeUdhaars.length > 0
     ? Math.max(0, tabPendingLent - tabPendingBorrowed)
-    : Math.max(0, (prevUdhaarLent + monthUdhaarLent) - (prevUdhaarRecovered + monthUdhaarRecovered));
+    : Math.max(0, udhaarDiyaKharcha - udhaarRecoveryIncome);
 
-  const effectiveMonthBakaya = hasUdhaarTabEntries
-    ? monthTabPendingLent
-    : Math.max(0, monthUdhaarLent - monthUdhaarRecovered);
-
-  const effectivePrevBakaya = hasUdhaarTabEntries
-    ? prevTabPendingLent
-    : Math.max(0, prevUdhaarLent - prevUdhaarRecovered);
-
-  const effectiveTotalSettled = hasUdhaarTabEntries
-    ? tabTotalSettled
-    : (prevUdhaarRecovered + monthUdhaarRecovered);
-
-  // Opening & Cash Balance (Recovered cash & reimbursement inflows flow back to liquid balance)
-  const openingNetSavings = prevIncome - prevTotalExpense + prevRimRecovery;
-  const openingCashBalance = prevIncome - prevTotalExpense - prevUdhaarLent + prevUdhaarRecovered + prevRimRecovery;
+  const totalPendingRim = prevPendingRim + monthPendingRim;
 
   // Active family member calculation in selected month
   const memberTxs = monthTransactions.filter(t => {
@@ -255,22 +282,11 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
     .filter(t => t.type === 'expense' && !t.isSavingsTransfer && !t.isUdhaarLent && t.category !== 'Udhaar Given')
     .reduce((sum, t) => sum + (t.amount || 0), 0);
 
-  const displayPersonalExpense = isFamily ? memberPersonalExpense : monthPersonalExpense;
-  // Net Savings preserves Udhar as receivable asset (income - non-udhaar expense + rim recovery)
-  const monthNetSavings = monthIncome - monthTotalExpense + monthRimRecovery;
-  const monthCashBalance = monthIncome - monthTotalExpense - monthUdhaarLent + monthUdhaarRecovered + monthRimRecovery;
-
-  // Cumulative / Total at the end of selected month
-  const totalNetSavings = openingNetSavings + monthNetSavings;
-  const totalCashBalance = openingCashBalance + monthCashBalance;
-  const totalUdhaarLent = prevUdhaarLent + monthUdhaarLent;
-  const totalPendingRim = prevPendingRim + monthPendingRim;
-
-  // Budget calculations: monthlySpent excludes categories exempt from budget!
+  // Budget calculations
   const monthlyBudgetLimit = summary.monthlyBudget;
   const monthlySpent = monthBudgetSpent;
   const budgetPercentage = monthlyBudgetLimit > 0 ? Math.round((monthlySpent / monthlyBudgetLimit) * 100) : 0;
-  const monthlySavingsRate = monthIncome > 0 ? Math.max(0, Math.round((monthNetSavings / monthIncome) * 100)) : 0;
+  const monthlySavingsRate = effectiveTotalIncome > 0 ? Math.max(0, Math.round((finalPureSavings / effectiveTotalIncome) * 100)) : 0;
 
   const displayAmount = (val: number, isMemberOwnAmount: boolean = false) => {
     if (isFamily && !isMemberOwnAmount) {
@@ -312,7 +328,7 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
   const isCurrentMonth = activeMonth === currentIstMonth;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3.5">
       {/* Sleek Month Navigator & Rollover Bar */}
       <div className="flex flex-wrap items-center justify-between gap-2.5 bg-slate-900/80 border border-white/[0.08] p-2.5 sm:p-3 rounded-2xl backdrop-blur-md shadow-lg shadow-black/20">
         <div className="flex items-center gap-1.5 sm:gap-2">
@@ -359,7 +375,22 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
         </div>
 
         {/* Quick Mode Switchers */}
-        <div className="flex items-center gap-2 text-xs">
+        <div className="flex items-center flex-wrap gap-2 text-xs">
+          {!isAllTime && prevFinalSavingsCarry !== 0 && !isFamily && (
+            <button
+              type="button"
+              onClick={() => setIncludeCarryforward(!includeCarryforward)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl border text-[11px] font-semibold cursor-pointer transition-all ${
+                includeCarryforward
+                  ? 'bg-indigo-500/20 border-indigo-500/40 text-indigo-200'
+                  : 'bg-white/[0.04] border-white/[0.08] text-slate-400 hover:text-slate-200'
+              }`}
+              title="Pichle mahino ki bachat is mahine ki income me jodein ya alag rakhein"
+            >
+              <span>📦 Pichla Carryforward ({prevFinalSavingsCarry >= 0 ? '+' : ''}₹{displayAmount(prevFinalSavingsCarry)}): {includeCarryforward ? 'ON' : 'OFF'}</span>
+            </button>
+          )}
+
           {!isAllTime ? (
             <>
               {isCurrentMonth ? (
@@ -412,15 +443,16 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
         </div>
       </div>
 
+      {/* Main 4 Top Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         
-        {/* 1. Total Income (Month or Lifetime) */}
+        {/* 1. Total Income (Bank + RIM + Udhar Wapas) */}
         <div className="glass-card glass-card-hover p-4 sm:p-5 relative overflow-hidden group">
           <div className="absolute top-0 right-0 -mr-8 -mt-8 w-28 h-28 rounded-full bg-emerald-500/10 blur-2xl group-hover:bg-emerald-500/20 transition-all pointer-events-none" />
           
           <div className="flex items-center justify-between relative z-10">
             <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
-              {isAllTime ? 'Kul Kamai (All Time)' : `${formatMonthName(activeMonth)} Kamai`}
+              {isAllTime ? 'Total Income (All Time)' : 'Total Income (In Bank)'}
             </span>
             <div className="w-9 h-9 rounded-xl icon-badge-emerald flex items-center justify-center transition-transform group-hover:scale-110">
               <TrendingUp className="w-4 h-4" />
@@ -431,12 +463,34 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
             <div className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight flex items-baseline font-mono">
               <span className="text-emerald-400 mr-1 text-xl font-medium">₹</span>
               <span className={isFamily ? 'font-mono tracking-widest text-slate-400' : ''}>
-                {displayAmount(monthIncome)}
+                {displayAmount(effectiveTotalIncome)}
               </span>
             </div>
-            {monthRimRecovery > 0 && !isFamily && (
-              <div className="text-[10px] text-cyan-300 font-medium mt-1 flex items-center gap-1">
-                <span>💼 +₹{displayAmount(monthRimRecovery)} Rim Recovery (Exempt from Salary)</span>
+
+            {!isFamily && (
+              <div className="mt-2 space-y-1 text-[11px]">
+                <div className="flex items-center justify-between text-slate-300">
+                  <span>💵 Salary / Regular:</span>
+                  <span className="font-mono font-semibold text-emerald-300">₹{displayAmount(regularIncome)}</span>
+                </div>
+                {rimRecoveryIncome > 0 && (
+                  <div className="flex items-center justify-between text-cyan-300">
+                    <span>💼 RIM Settled:</span>
+                    <span className="font-mono font-semibold">+₹{displayAmount(rimRecoveryIncome)}</span>
+                  </div>
+                )}
+                {udhaarRecoveryIncome > 0 && (
+                  <div className="flex items-center justify-between text-amber-300">
+                    <span>🤝 Udhar Wapas:</span>
+                    <span className="font-mono font-semibold">+₹{displayAmount(udhaarRecoveryIncome)}</span>
+                  </div>
+                )}
+                {includeCarryforward && !isAllTime && prevFinalSavingsCarry !== 0 && (
+                  <div className="flex items-center justify-between text-indigo-300">
+                    <span>📦 Pichla Carry:</span>
+                    <span className="font-mono font-semibold">₹{displayAmount(prevFinalSavingsCarry)}</span>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -444,21 +498,21 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
           <div className="mt-3 flex items-center justify-between text-xs pt-2.5 border-t border-white/[0.08] relative z-10">
             <span className="inline-flex items-center text-emerald-400 font-semibold">
               <ArrowUpRight className="w-3.5 h-3.5 mr-0.5" />
-              {isFamily ? '🔒 Masked' : `${monthIncomeCount} Entries`}
+              {isFamily ? '🔒 Masked' : `${monthIncomeCount} Inflows`}
             </span>
             <span className="text-slate-400 text-[11px] font-medium">
-              {isFamily ? 'Family Privacy' : isAllTime ? 'Lifetime Earnings' : isCurrentMonth ? 'Active Month' : 'Archived Month'}
+              {isFamily ? 'Family Privacy' : 'Salary + RIM + Udhar'}
             </span>
           </div>
         </div>
 
-        {/* 2. Personal Expense / Family Member's Expense */}
+        {/* 2. Total Kharcha (Bank + Cash + All Cards) */}
         <div className="glass-card glass-card-hover p-4 sm:p-5 relative overflow-hidden group">
           <div className="absolute top-0 right-0 -mr-8 -mt-8 w-28 h-28 rounded-full bg-rose-500/10 blur-2xl group-hover:bg-rose-500/20 transition-all pointer-events-none" />
 
           <div className="flex items-center justify-between relative z-10">
             <span className="text-xs font-bold uppercase tracking-wider text-rose-400">
-              {isFamily ? 'Aapka Kharcha' : isAllTime ? 'Personal Kharcha (All Time)' : `${formatMonthName(activeMonth)} Kharcha`}
+              {isFamily ? 'Aapka Kharcha' : 'Total Kharcha (Bank+Cash+Card)'}
             </span>
             <div className="w-9 h-9 rounded-xl icon-badge-rose flex items-center justify-center transition-transform group-hover:scale-110">
               <TrendingDown className="w-4 h-4" />
@@ -468,16 +522,23 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
           <div className="mt-3 relative z-10">
             <div className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight flex items-baseline font-mono">
               <span className="text-rose-400 mr-1 text-xl font-medium">₹</span>
-              <span>{displayAmount(displayPersonalExpense, true)}</span>
+              <span>{displayAmount(isFamily ? memberPersonalExpense : totalAllKharcha, true)}</span>
             </div>
-            {monthUdhaarLent > 0 && !isFamily && (
-              <div className="text-[10px] text-amber-300 font-medium mt-1 flex items-center gap-1 flex-wrap">
-                <span>🤝 ₹{displayAmount(monthUdhaarLent)} Is Mahine Udhaar Diya</span>
-                {effectiveMonthBakaya < monthUdhaarLent && (
-                  <span className="text-[9px] text-emerald-300 font-semibold bg-emerald-950/60 px-1 rounded border border-emerald-500/30">
-                    (₹{displayAmount(monthUdhaarLent - effectiveMonthBakaya)} Wapas Aaya • ₹{displayAmount(effectiveMonthBakaya)} Bakaya)
+
+            {!isFamily && (
+              <div className="mt-2 space-y-1 text-[11px]">
+                <div className="flex items-center justify-between text-emerald-300 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-500/20">
+                  <span className="flex items-center gap-1">
+                    <Landmark className="w-3 h-3" /> Bank & Cash se:
                   </span>
-                )}
+                  <span className="font-mono font-bold">₹{displayAmount(totalBankAndCashKharcha)}</span>
+                </div>
+                <div className="flex items-center justify-between text-amber-300 bg-amber-950/40 px-2 py-0.5 rounded border border-amber-500/20">
+                  <span className="flex items-center gap-1">
+                    <CreditCard className="w-3 h-3" /> Credit Cards se:
+                  </span>
+                  <span className="font-mono font-bold">₹{displayAmount(cardTotalKharcha)}</span>
+                </div>
               </div>
             )}
           </div>
@@ -485,22 +546,24 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
           <div className="mt-3 flex items-center justify-between text-xs pt-2.5 border-t border-white/[0.08] relative z-10">
             <span className="inline-flex items-center text-rose-400 font-semibold">
               <ArrowDownRight className="w-3.5 h-3.5 mr-0.5" />
-              {isFamily ? `${memberTxs.length} Transactions` : `${monthExpenseCount} Transactions`}
+              {isFamily ? `${memberTxs.length} Entries` : `${monthExpenseCount} Expenses`}
             </span>
-            <span className="text-slate-400 text-[11px] font-medium">
-              {isFamily ? (activeFamilyMemberName || 'Aapka hisaab') : 'Excludes Rim & Udhaar'}
+            <span className="text-slate-400 text-[10px] font-mono">
+              {isFamily
+                ? (activeFamilyMemberName || 'Aapka hisaab')
+                : `Budget: ₹${displayAmount(budgetAndGharKharcha)} • RIM: ₹${displayAmount(rimKharcha)} • Udhar: ₹${displayAmount(udhaarDiyaKharcha)}`}
             </span>
           </div>
         </div>
 
-        {/* 3. Net Savings (Carryforward + Month Savings) */}
-        <div className="glass-card glass-card-hover p-4 sm:p-5 relative overflow-hidden group border-indigo-500/35">
+        {/* 3. Bank & Cash Balance -> Card Reserve -> Final Savings */}
+        <div className="glass-card glass-card-hover p-4 sm:p-5 relative overflow-hidden group border-indigo-500/40">
           <div className="absolute top-0 right-0 -mr-8 -mt-8 w-28 h-28 rounded-full bg-indigo-500/15 blur-2xl group-hover:bg-indigo-500/25 transition-all pointer-events-none" />
 
           <div className="flex items-center justify-between relative z-10">
             <span className="text-xs font-bold uppercase tracking-wider text-indigo-300 flex items-center gap-1.5">
               <Zap className="w-3.5 h-3.5 text-indigo-400" />
-              Net Savings & Balance
+              Final Safe Savings
             </span>
             <div className="w-9 h-9 rounded-xl icon-badge-cyan flex items-center justify-center transition-transform group-hover:scale-110">
               <PiggyBank className="w-4 h-4" />
@@ -508,64 +571,44 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
           </div>
 
           <div className="mt-3 relative z-10">
-            <div className="text-2xl sm:text-3xl font-extrabold text-indigo-300 tracking-tight flex items-baseline font-mono">
-              <span className="mr-1 text-xl font-medium text-indigo-400">₹</span>
+            <div className="text-2xl sm:text-3xl font-extrabold text-emerald-400 tracking-tight flex items-baseline font-mono">
+              <span className="mr-1 text-xl font-medium text-emerald-500">₹</span>
               <span className={isFamily ? 'tracking-widest text-slate-400' : ''}>
-                {displayAmount(totalNetSavings)}
+                {displayAmount(finalPureSavings)}
               </span>
             </div>
-            {effectiveTotalBakaya > 0 && !isFamily ? (
-              <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-                <button 
-                  type="button"
-                  onClick={onNavigateToUdhaar}
-                  className="inline-flex items-center text-[10px] font-medium text-emerald-400 bg-emerald-950/60 hover:bg-emerald-900/60 border border-emerald-500/40 px-2 py-0.5 rounded-md transition-all cursor-pointer shadow-xs text-left group"
-                  title="Click karke Udhaar Khata (Wealth & Khata) kholein"
-                >
-                  {effectivePrevBakaya > 0 && !isAllTime ? (
-                    <span>
-                      🤝 <b>Udhaar Khata Bakaya:</b> ₹{displayAmount(effectiveTotalBakaya)} (Is Mahine: ₹{displayAmount(effectiveMonthBakaya)} • Pichla: ₹{displayAmount(effectivePrevBakaya)})
-                    </span>
-                  ) : (
-                    <span>
-                      🤝 <b>Udhaar Khata Bakaya:</b> ₹{displayAmount(effectiveTotalBakaya)} Lena Hai (Bachat Surakshit)
-                    </span>
-                  )}
-                  {effectiveTotalSettled > 0 && (
-                    <span className="ml-1 text-[9px] text-emerald-300/80 font-normal">
-                      • ₹{displayAmount(effectiveTotalSettled)} Settle Hua
-                    </span>
-                  )}
-                  <span className="ml-1 text-[9px] text-cyan-400 group-hover:underline font-mono">
-                    [Khata ↗]
-                  </span>
-                </button>
+
+            {!isFamily && (
+              <div className="mt-2 space-y-1 text-[11px]">
+                <div className="flex items-center justify-between text-slate-200 bg-slate-800/70 px-2 py-0.5 rounded border border-white/10">
+                  <span>🏦 Bank & Cash Balance:</span>
+                  <span className="font-mono font-bold text-cyan-300">₹{displayAmount(bankAndCashInHand)}</span>
+                </div>
+                <div className="flex items-center justify-between text-amber-300 bg-amber-950/50 px-2 py-0.5 rounded border border-amber-500/30">
+                  <span>💳 (-) Card Reserve:</span>
+                  <span className="font-mono font-bold">-₹{displayAmount(cardReserveAmount)}</span>
+                </div>
               </div>
-            ) : effectiveTotalSettled > 0 && !isFamily ? (
-              <div className="mt-1 flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={onNavigateToUdhaar}
-                  className="inline-flex items-center text-[10px] font-medium text-cyan-400 bg-cyan-950/50 border border-cyan-500/30 px-1.5 py-0.5 rounded-md hover:bg-cyan-900/50 cursor-pointer"
-                  title="Sabhi Udhaar Settle ho chuke hain! Khata dekhne ke liye click karein"
-                >
-                  ✨ Udhaar Khata Settle (₹{displayAmount(effectiveTotalSettled)} Wapas Aaya) [Khata ↗]
-                </button>
-              </div>
-            ) : null}
+            )}
           </div>
 
           <div className="mt-3 flex items-center justify-between text-xs pt-2.5 border-t border-white/[0.08] relative z-10">
             <span className="font-semibold text-indigo-300">
-              {isFamily ? '🔒 Hidden for Family' : !isAllTime && openingNetSavings !== 0 ? (
-                `📦 Carry: ₹${displayAmount(openingNetSavings)} • Is Mahine: ₹${displayAmount(monthNetSavings)}`
-              ) : (
-                `Liquid Cash: ₹${displayAmount(totalCashBalance)}`
-              )}
+              {isFamily ? '🔒 Hidden for Family' : `Bachat Rate: ${monthlySavingsRate}%`}
             </span>
-            <span className="text-slate-400 text-[11px] font-medium">
-              {isFamily ? 'Master Protected' : totalUdhaarLent > 0 ? `Cash: ₹${displayAmount(totalCashBalance)}` : `Bachat: ${monthlySavingsRate}%`}
-            </span>
+            {effectiveTotalBakaya > 0 && !isFamily ? (
+              <button
+                type="button"
+                onClick={onNavigateToUdhaar}
+                className="text-[10px] font-semibold text-emerald-400 hover:underline cursor-pointer"
+              >
+                🤝 Udhar Lena Baki: ₹{displayAmount(effectiveTotalBakaya)} ↗
+              </button>
+            ) : (
+              <span className="text-slate-400 text-[11px] font-medium">
+                100% Free for Savings
+              </span>
+            )}
           </div>
         </div>
 
@@ -612,6 +655,144 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
         </div>
 
       </div>
+
+      {/* Dedicated Seedha Hisaab & Card Reserve Strip (Visible to Owner) */}
+      {!isFamily && (
+        <div className="bg-slate-900/90 border border-indigo-500/30 rounded-2xl p-4 sm:p-5 shadow-xl">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3.5 border-b border-white/[0.08]">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center text-indigo-300">
+                <Wallet className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  Seedha Hisaab & Card Reserve Calculator
+                  <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                    {formatMonthName(activeMonth)}
+                  </span>
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  Total Income me se Bank/Cash kharcha aur Card Reserve alag karke asli bachat
+                </p>
+              </div>
+            </div>
+
+            {ccPaymentDone > 0 && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-950/60 border border-emerald-500/30 text-emerald-300 text-xs font-mono">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                Is Mahine CC Bill Paid: ₹{displayAmount(ccPaymentDone)}
+              </span>
+            )}
+          </div>
+
+          {/* Step-by-Step Visual Equation */}
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-stretch">
+            {/* Step 1: Total Income */}
+            <div className="bg-slate-950/70 border border-emerald-500/25 rounded-xl p-3 flex flex-col justify-between">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-400">
+                1. Total Income (Bank)
+              </div>
+              <div className="text-lg sm:text-xl font-extrabold font-mono text-white my-1">
+                ₹{displayAmount(effectiveTotalIncome)}
+              </div>
+              <div className="text-[10px] text-slate-400 space-y-0.5 border-t border-white/[0.06] pt-1.5">
+                <div>Salary/Inc: ₹{displayAmount(regularIncome)}</div>
+                {(rimRecoveryIncome > 0 || udhaarRecoveryIncome > 0) && (
+                  <div className="text-cyan-300">
+                    + RIM: ₹{displayAmount(rimRecoveryIncome)} • Udhar: ₹{displayAmount(udhaarRecoveryIncome)}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Step 2: Total Kharcha (All Sources & Purposes) */}
+            <div className="bg-slate-950/70 border border-rose-500/25 rounded-xl p-3 flex flex-col justify-between">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-rose-400">
+                2. Total Kharcha (Sab)
+              </div>
+              <div className="text-lg sm:text-xl font-extrabold font-mono text-white my-1">
+                ₹{displayAmount(totalAllKharcha)}
+              </div>
+              <div className="text-[10px] text-slate-300 space-y-0.5 border-t border-white/[0.06] pt-1.5">
+                <div className="flex justify-between">
+                  <span>🏠 Budget/Ghar:</span>
+                  <span className="font-mono">₹{displayAmount(budgetAndGharKharcha)}</span>
+                </div>
+                <div className="flex justify-between text-cyan-300">
+                  <span>💼 Reimburse:</span>
+                  <span className="font-mono">₹{displayAmount(rimKharcha)}</span>
+                </div>
+                <div className="flex justify-between text-amber-300">
+                  <span>🤝 Udhar Diya:</span>
+                  <span className="font-mono">₹{displayAmount(udhaarDiyaKharcha)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Step 3: Bank & Cash Kharcha vs Bank Balance Left */}
+            <div className="bg-slate-950/70 border border-cyan-500/30 rounded-xl p-3 flex flex-col justify-between">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-cyan-400">
+                3. Bank & Cash Balance
+              </div>
+              <div className="text-lg sm:text-xl font-extrabold font-mono text-cyan-300 my-1">
+                ₹{displayAmount(bankAndCashInHand)}
+              </div>
+              <div className="text-[10px] text-slate-300 space-y-0.5 border-t border-white/[0.06] pt-1.5">
+                <div className="flex justify-between text-rose-300">
+                  <span>(-) Bank/Cash Kharcha:</span>
+                  <span className="font-mono">₹{displayAmount(totalBankAndCashKharcha)}</span>
+                </div>
+                <div className="text-[9px] text-slate-400">
+                  (Bank: ₹{displayAmount(bankOnlyKharcha)} • Cash: ₹{displayAmount(cashOnlyKharcha)})
+                </div>
+              </div>
+            </div>
+
+            {/* Step 4: Card Reserve (To set aside for CC bills) */}
+            <div className="bg-amber-950/25 border border-amber-500/35 rounded-xl p-3 flex flex-col justify-between">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-amber-400 flex items-center justify-between">
+                <span>4. Card Reserve 💳</span>
+                <span className="text-[9px] bg-amber-500/20 text-amber-200 px-1.5 py-0.5 rounded">Alag Rakhein</span>
+              </div>
+              <div className="text-lg sm:text-xl font-extrabold font-mono text-amber-300 my-1">
+                ₹{displayAmount(cardReserveAmount)}
+              </div>
+              <div className="text-[10px] text-amber-200/90 space-y-0.5 border-t border-amber-500/20 pt-1.5 max-h-20 overflow-y-auto">
+                {cardBreakdownEntries.length > 0 ? (
+                  cardBreakdownEntries.map(([cardName, amt]) => (
+                    <div key={cardName} className="flex justify-between">
+                      <span className="truncate pr-1">{cardName}:</span>
+                      <span className="font-mono font-bold">₹{displayAmount(amt)}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-slate-400">Koi Card kharcha nahi</div>
+                )}
+              </div>
+            </div>
+
+            {/* Step 5: Final Pure Savings */}
+            <div className="bg-emerald-950/30 border-2 border-emerald-500/40 rounded-xl p-3 flex flex-col justify-between">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-300 flex items-center justify-between">
+                <span>5. Final Savings 💰</span>
+                <span className="text-[9px] bg-emerald-500/20 text-emerald-200 px-1.5 py-0.5 rounded">Pure Bachat</span>
+              </div>
+              <div className="text-xl sm:text-2xl font-extrabold font-mono text-emerald-400 my-1">
+                ₹{displayAmount(finalPureSavings)}
+              </div>
+              <div className="text-[10px] text-emerald-200/90 space-y-0.5 border-t border-emerald-500/20 pt-1.5">
+                <div className="font-mono">
+                  ₹{displayAmount(bankAndCashInHand)} (Bank) - ₹{displayAmount(cardReserveAmount)} (Card)
+                </div>
+                <div className="text-[9px] text-emerald-300/80">
+                  Ye rashi aap sidha Savings me dal sakte hain
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+
